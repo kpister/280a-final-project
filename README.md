@@ -8,8 +8,8 @@ running Python 3.7.1
 
 ## TODO:
 
-[x] Reading Genome
+- [x] Reading Genome
 
-[ ] Reading OM reads
+- [ ] Reading OM reads
 
-[ ] Etc...
+- [ ] Etc...
