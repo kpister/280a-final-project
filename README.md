@@ -1,9 +1,15 @@
 # Final Project
 
-TODO:
+## Setup:
 
-Reading OM reads
+running Python 3.7.1
 
-Reading Genome
+`pip install -r requirements.txt`
 
-Etc...
+## TODO:
+
+[x] Reading Genome
+
+[ ] Reading OM reads
+
+[ ] Etc...
