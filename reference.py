@@ -9,15 +9,15 @@ Options:
 
 Authors: kaiser, steven
 """
-
-from docopt import docopt
-import random
+from docopt import docopt 
+import random 
 
 class Reference:
     def __init__(self, filename, cnumber):
         self.cnumber = cnumber
         # read file, build positions and distances
         self.reference = self.parse_cmap(filename, cnumber)
+        #self.distances = self.distances[:50]
 
     def parse_cmap(self, filename, cnumber):
         # cnumber = the chromosome we are targeting
@@ -55,7 +55,7 @@ class Reference:
     def generate_read(self):
         # randomized on length, and structural variations present
         length = random.randint(10, 100)
-        start_pos = random.randint(0, len(self.distances))
+        start_pos = random.randint(0, len(self.distances)-length)
 
         read = Read(start_pos)
         read.add_cuts(self.distances[start_pos:start_pos+length])
@@ -63,11 +63,70 @@ class Reference:
         # return Read object
         return read
 
+    # C(s_i, r_j) = min(C(s_{i-1}, r_{j-1}) + d_{ij}, C(s_{i-1}, r_j) + d_gap, C(s_i, r_{j-1}) + d_gap)
+    # With memoization (using a table or something of the sort): O(len(s) * len(r))
+    # also space of O(len(s)*len(r)). With d+c, we can reduce to O(len(s) + len(r))
     def locate_read(self, read):
         # find where in reference the read fits
+        # local alignment means no penalty for shifting
+        table = [[0 for _ in range(len(read.cuts)+1)] for _ in range(len(self.distances)+1)]
+        path = [["" for _ in range(len(read.cuts)+1)] for _ in range(len(self.distances)+1)]
+        ref = self.distances
+
+        def dist(x, y):
+            if x == y:
+                return -1
+            return 1
+
+        for i, ref_i in enumerate(ref):
+            for j, read_j in enumerate(read.cuts):
+                opt1 = dist(ref_i, read_j) + table[i][j]
+                opt2 = 1 + table[i][j+1]
+                opt3 = 1 + table[i+1][j]
+                opt4 = 0
+
+                if opt1 < opt2 and opt1 < opt3 and opt1 < opt4:
+                    table[i+1][j+1] = opt1
+                    path[i+1][j+1] += "d"
+                elif opt2 <= opt1 and opt2 <= opt3 and opt2 < opt4:
+                    table[i+1][j+1] = opt2
+                    path[i+1][j+1] += "|"
+                elif opt3 <= opt1 and opt3 <= opt2 and opt3 < opt4: 
+                    table[i+1][j+1] = opt3
+                    path[i+1][j+1] += "-"
+                else:
+                    table[i+1][j+1] = 0
+                    path[i+1][j+1] = "s"
+
+        best_i, best_j, val = -1,-1, 0
+        for i, row in enumerate(table):
+            for j, cell in enumerate(row):
+                if cell < val:
+                    best_i, best_j, val = i, j, cell
+
+        if val == 0:
+            return None
+
+        out = []
+        while best_i >=0 and best_j >= 0:
+            if path[best_i][best_j] == 'd':
+                out.append(read.cuts[best_j-1])
+                best_i -= 1
+                best_j -= 1
+            elif path[best_i][best_j] == '-':
+                out.append('*')
+                best_j -= 1
+            elif path[best_i][best_j] == '|':
+                out.append('-')
+                best_i -= 1
+            else:
+                out.append("   ")
+                best_i -= 1
+
+        out = out[::-1] + ["   "] * (len(ref) - len(out))
+        return out
 
         # return postion and list of structural variations present
-        pass
 
 class Read:
     def __init__(self, start_pos):
@@ -95,3 +154,10 @@ if __name__ == '__main__':
     print(f'Randomly generated {len(reads)} reads!')
     for r in reads:
         print(f'This read has {len(r.cuts)} cuts')
+
+    print(reads[0].cuts)
+    reads[0].cuts = reads[0].cuts[:3] + reads[0].cuts[4:]
+    print(reads[0].cuts)
+    print(ref.distances)
+    loc = ref.locate_read(reads[0])
+    print(loc)
