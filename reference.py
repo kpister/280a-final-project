@@ -12,7 +12,9 @@ Authors: kaiser, steven
 from docopt import docopt 
 import random 
 import numpy as np
-from island import Island
+from island import Island, CreateIslands
+from table import Table
+from read import Read, SV
 
 class Reference:
     def __init__(self, filename, cnumber):
@@ -56,12 +58,10 @@ class Reference:
     # create an optical read based on reference
     def generate_read(self):
         # randomized on length, and structural variations present
-        min_length = 20
-        max_length = 100
-        min_delete = 100
-        max_delete = 1000
-        expected_merges = 2 # np.random.poisson() # TODO Find a good value
-        expected_splits = 2 # np.random.poisson() # TODO Find a good value
+        min_length, max_length = 20, 100
+        min_delete, max_delete = 100, 1000
+        expected_merges = 2 
+        expected_splits = 2 
         expected_inversions = 2
         long_delete_prob = 1
         long_delete_length = 0
@@ -73,70 +73,54 @@ class Reference:
             long_delete_length = random.randint(min_delete, max_delete)
             long_delete_start = random.randint(length//4, 3*length//4)
 
-        start_pos = random.randint(0, len(self.distances)-length - long_delete_length)
+        start_pos = random.randint(0, len(self.distances) - length - long_delete_length)
 
         read = Read(start_pos)
 
         if long_delete_start != 0:
-            read.svs.append({'name': 'long_delete', 
-                             'local_offset': long_delete_start, 
-                             'abs_offset': start_pos + long_delete_start, 
-                             'length': long_delete_length})
+            read.add_sv(SV('long_delete', long_delete_start, long_delete_length))
 
-        i = start_pos
-        while i < start_pos+length+long_delete_length:
-            if i >= start_pos + long_delete_start and i < start_pos + long_delete_start + long_delete_length:
-                i += 1
+        i = 0
+        ref = self.distances[start_pos:start_pos + length + long_delete_length]
+        while i < len(ref):
+            if i in range(long_delete_start, long_delete_start + long_delete_length):
+                i = long_delete_start + long_delete_length
                 continue
 
-            if random.random() > 1.0 / expected_merges and i + 1 < start_pos + length:
-                merge = self.distances[i] + self.distances[i+1]
-                read.cuts.append(merge)
-                read.svs.append({'name': 'missing_site', 
-                                 'local_offset': i - start_pos,
-                                 'abs_offset': i,
-                                 'position': self.distances[i],
-                                 'read_length': merge})
+            seq = []
+            if random.random() > 1.0 / expected_merges and i + 1 < length:
+                merge = ref[i] + ref[i+1]
+                seq = [merge]
+                read.add_sv(SV('missing_site', i, merge ,{'pos': ref[i]}))
                 expected_merges -= 1
-                i += 2
 
             elif random.random() > 1.0 / expected_splits:
-                split = self.distances[i] - random.randint(0, self.distances[i])
-                read.cuts.append(split)
-                read.cuts.append(self.distances[i] - split)
-                read.svs.append({'name': 'extra_site',
-                                 'local_offset': i - start_pos,
-                                 'abs_offset': i,
-                                 'position': split,
-                                 'ref_length': self.distances[i]})
+                split = ref[i] - random.randint(0, ref[i])
+                seq = [split, ref[i] - split]
+                read.add_sv(SV('extra_site', i, ref[i], {'pos': split}))
                 expected_splits -= 1
-                i += 1
 
             elif random.random() > 1.0 / expected_inversions and i + 1 < start_pos + length:
-                read.cuts.append(self.distances[i+1])
-                read.cuts.append(self.distances[i])
-                read.svs.append({'name': 'inversion',
-                                 'local_offset': i - start_pos,
-                                 'abs_offset': i,
-                                 'length': 2})
+                seq = [ref[i+1], ref[i]]
+                read.add_sv(SV('inversion', i, 2))
                 expected_inversions -= 1
-                i += 2
 
             else:
-                read.cuts.append(self.distances[i])
-                i += 1
+                seq = [ref[i]]
+
+            read.add_cuts(seq)
+            i += len(seq)
 
         # return Read object
         return read
 
-    # C(s_i, r_j) = min(C(s_{i-1}, r_{j-1}) + d_{ij}, C(s_{i-1}, r_j) + d_gap, C(s_i, r_{j-1}) + d_gap)
-    # With memoization (using a table or something of the sort): O(len(s) * len(r))
-    # also space of O(len(s)*len(r)). With d+c, we can reduce to O(len(s) + len(r))
     def locate_read(self, read):
         # find where in reference the read fits
         # local alignment means no penalty for shifting
-        table = [[0 for _ in read.cuts] for _ in self.distances]
-        path = [["" for _ in read.cuts] for _ in self.distances]
+        width, height = len(read.cuts), len(self.distances)
+        mem = Table(width, height, 0)
+        path = Table(width, height, '')
+
         ref = self.distances
 
         def dist(x, y):
@@ -146,122 +130,62 @@ class Reference:
 
         for i, ref_i in enumerate(ref):
             for j, read_j in enumerate(read.cuts):
-                opt1 = opt2 = opt3 = opt4 = opt5 = opt6 = 0
-                left = right = diag = diag2 = i2j1 = i1j2 = 0
-                if j > 0:
-                    left = table[i][j-1]
-                if i > 0:
-                    right = table[i-1][j]
-                if i > 0 and j > 0:
-                    diag = table[i-1][j-1]
-                if i > 1 and j > 1:
-                    diag2 = table[i-2][j-2]
-                if i > 1 and j > 0:
-                    i2j1 = table[i-2][j-1]
-                if i > 0 and j > 1:
-                    i1j2 = table[i-1][j-2]
+                opt4 = opt5 = opt6 = 0
 
-                opt1 = dist(ref_i, read_j) + diag
-                opt2 = int(right / 1.5)
-                opt3 = int(left / 1.5)
+                opt1 = dist(ref_i, read_j) + mem.get(i-1, j-1)
+                opt2 = int(mem.get(i-1, j) / 1.5)
+                opt3 = int(mem.get(i, j-1) / 1.5)
 
                 # missing site
                 if i > 0:
-                    opt4 = dist(ref_i + ref[i-1], read_j) + i2j1
+                    opt4 = dist(ref_i + ref[i-1], read_j) + mem.get(i-2, j-1)
                 
                 # extra site
                 if j > 0:
-                    opt5 = dist(ref_i, read_j + read.cuts[j-1]) + i1j2
+                    opt5 = dist(ref_i, read_j + read.cuts[j-1]) + mem.get(i-1, j-1)
 
                 # inversion
                 if i > 0 and j > 0:
-                    opt6 = dist(ref_i, read.cuts[j-1]) + dist(ref[i-1], read_j) + diag2
+                    opt6 = dist(ref_i, read.cuts[j-1]) + dist(ref[i-1], read_j) + mem.get(i-2, i-2)
 
                 best_val = min(opt1, opt2, opt3, opt4, opt5, opt6, 0)
 
                 if 0 == best_val:
-                    table[i][j] = 0
-                    path[i][j] = "s"
+                    p = 's'
                 elif opt1 == best_val:
-                    table[i][j] = opt1
-                    path[i][j] = "d"
+                    p = 'd'
                 elif opt2 == best_val:
-                    table[i][j] = opt2
-                    path[i][j] = "|"
+                    p = '|'
                 elif opt3 == best_val:
-                    table[i][j] = opt3
-                    path[i][j] = "-"
+                    p = '-'
                 elif opt4 == best_val:
-                    if table[i-1][j] == 0:
-                        table[i-1][j] = 1 
-                        path[i-1][j] = 'x'
-                    table[i][j] = opt4
-                    path[i][j] = "missing_site"
+                    if mem.get(i-1, j) == 0:
+                        mem.set(i-1, j, 1)
+                        path.set(i-1, j, 'x')
+                    p = 'missing_site'
                 elif opt5 == best_val:
-                    if table[i][j-1] == 0:
-                        table[i][j-1] = 1 
-                        path[i][j-1] = 'x'
-                    table[i][j] = opt5
-                    path[i][j] = "extra_site"
+                    if mem.get(i, j-1) == 0:
+                        mem.set(i, j-1, 1)
+                        path.set(i, j-1, 'x')
+                    p = 'extra_site'
                 elif opt6 == best_val:
-                    if table[i-1][j-1] == 0:
-                        table[i-1][j-1] = 1 
-                        path[i-1][j-1] = 'x'
-                    table[i][j] = opt6
-                    path[i][j] = "inversion"
-                else:
-                    table[i][j] = 0
-                    path[i][j] = "s"
+                    if mem.get(i-1, j-1) == 0:
+                        mem.set(i-1, j-1, 1)
+                        path.set(i-1, j-1, 'x')
+                    p = 'inversion'
 
-        islands = []
-        for i, row in enumerate(table):
-            for j, cell in enumerate(row):
-                if cell != 0:
-                    island = Island(len(row), len(table))
-                    table[i][j] = 0
-                    island.set(i, j, cell)
-                    queue = [(i, j)]
-                    while queue:
-                        x, y = queue.pop()
-                        if x > 0 and table[x-1][y] != 0:
-                            island.set(x-1, y, table[x-1][y])
-                            table[x-1][y] = 0
-                            queue.insert(0,(x-1,y))
-                        if x+1 < len(table) and table[x+1][y] != 0:
-                            island.set(x+1, y, table[x+1][y])
-                            table[x+1][y] = 0
-                            queue.insert(0,(x+1,y))
-                        if y > 0 and table[x][y-1] != 0:
-                            island.set(x, y-1, table[x][y-1])
-                            table[x][y-1] = 0
-                            queue.insert(0,(x,y-1))
-                        if y+1 < len(row) and table[x][y+1] != 0:
-                            island.set(x, y+1, table[x][y+1])
-                            table[x][y+1] = 0
-                            queue.insert(0,(x,y+1))
-                        if y+1 < len(row)  and x+1 < len(table) and table[x+1][y+1] != 0:
-                            island.set(x+1, y+1, table[x+1][y+1])
-                            table[x+1][y+1] = 0
-                            queue.insert(0,(x+1,y+1))
-                    islands.append(island)
+                mem.set(i, j, best_val)
+                path.set(i, j, p)
 
-        #for l in path:
-            #for e in l:
-                #print(e[0], end=' ')
-            #print()
-
-        sorted_islands = sorted(islands, key=lambda i: i.get_best()[2])
+        islands = sorted(CreateIslands(mem), key=lambda i: i.best)
 
         best_islands = []
-        for island in sorted_islands:
-            if not island.list_conflicts(best_islands) and island.best < -1:
+        for island in islands:
+            if not island.list_conflicts(best_islands):
                 best_islands.append(island)
 
-        chains = [self.backtrack_island(island, path, read, ref) for island in best_islands]
-
-        final = ["" for _ in range(len(ref))]
-        for index in range(len(final)):
-            final[index] = ''.join([chain[index] for chain in chains])
+        chains = [self.backtrack(i.max_x, i.max_y, path, read.cuts) for i in best_islands]
+        final = [''.join([c[i] for c in chains]) for i in range(height)]
 
         counter = 0
         s = False
@@ -281,134 +205,41 @@ class Reference:
             elif counter > 0 and distance == '':
                 final[index] = 'd'
             
-        read.guessed_start, read.guessed_svs = self.reconstruct_svs(final)
+        read.add_svs(final)
         print(read.start_pos)
-        print(read.guessed_start)
-        print(read.guessed_svs)
+        print(read.start_guess)
+        print(read.svs_guesses)
         return final
+                           
+    def backtrack(self, max_x, max_y, path, cuts):
+        ref = self.distances
 
-    def reconstruct_svs(self, read):
-        svs = []
-        i = 0
-        start = -1
-        while i < len(read):
-            if '' == read[i]:
-                i += 1
-                continue
-
-            if start == -1:
-                start = i
-
-            if 's' in read[i]:
-                first = int(read[i][:-1])
-                second = int(read[i+1][:-1])
-                svs.append({'name': 'missing_site',
-                            'local_offset': i-start,
-                            'abs_offset': i,
-                            'position': first,
-                            'read_length': first+second})
-                i += 2
-
-            elif '+' in read[i]:
-                first, second = read[i].split('+')
-                svs.append({'name': 'extra_site',
-                            'local_offset': i-start,
-                            'abs_offset': i,
-                            'position': int(first),
-                            'ref_length': int(first) + int(second)})
-                i += 1
-
-            elif 'r' in read[i]:
-                saved_i = i
-                length = 0
-                while i < len(read) and 'r' in read[i]:
-                    length += 1
-                    i += 1
-
-                svs.append({'name': 'inversion',
-                            'local_offset': saved_i-start,
-                            'abs_offset': saved_i,
-                            'length': length})
-
-            elif 'd' == read[i]:
-                saved_i = i
-                length = 0
-                while i < len(read) and 'd' == read[i]:
-                    length += 1
-                    i += 1
-
-                svs.append({'name': 'long_delete',
-                            'local_offset': saved_i-start,
-                            'abs_offset': saved_i,
-                            'length': length})
-            else:
-                i += 1
-                            
-        return start, svs
-
-
-    def backtrack_island(self, island, path, read, ref):
-        best_i, best_j, val = island.get_best()
-
-        if val == 0:
-            return None
-
-        #for l in island.grid:
-            #for e in l:
-                #print(f'{e:2}', end=' ')
-            #print()
-
-        #print()
+        translate = {'d': lambda: [str(cuts[j])],
+                     '-': lambda: ['*'],
+                     '|': lambda: ['-'],
+                     'm': lambda: [f'{ref[i]}s', f'{ref[i+1]}s'],
+                     'e': lambda: [f'{cuts[j-1]}+{cuts[j]}'],
+                     'i': lambda: [f'{cuts[j]}r', f'{cuts[j-1]}r']}
+        decrement = {'d' : (1, 1),
+                     '-' : (0, 1),
+                     '|' : (1, 0),
+                     'm' : (2, 1),
+                     'e' : (1, 2),
+                     'i' : (2, 2)}
 
         out = []
-        while best_i >=0 and best_j >= 0:
-            if path[best_i][best_j] == 'd':
-                out.append(str(read.cuts[best_j]))
-                best_i -= 1
-                best_j -= 1
-            elif path[best_i][best_j] == '-':
-                out.append('*')
-                best_j -= 1
-            elif path[best_i][best_j] == '|':
-                out.append('-')
-                best_i -= 1
-            elif path[best_i][best_j] == 'missing_site':
-                out.append(f'{ref[best_i]}s')
-                out.append(f'{ref[best_i-1]}s')
-                best_i -= 2
-                best_j -= 1
-            elif path[best_i][best_j] == 'extra_site':
-                out.append(f'{read.cuts[best_j-1]}+{read.cuts[best_j]}')
-                best_i -= 1
-                best_j -= 2
-            elif path[best_i][best_j] == 'inversion':
-                out.append(f'{read.cuts[best_j]}r')
-                out.append(f'{read.cuts[best_j-1]}r')
-                best_i -= 2
-                best_j -= 2
-            else:
+        i, j = max_x, max_y
+        while i >= 0 and j >= 0:
+            c = path.get(i, j)[0]
+            if c in ['s', 'x']:
                 break
 
-        out = out + [""] * (best_i + 1)
-        out = out[::-1] + [""] * (len(ref) - len(out))
-        return out
+            out = translate[c]() + out
+            di, dj = decrement[c]
+            i, j = i - di, j - dj
 
-        # return postion and list of structural variations present
-
-class Read:
-    def __init__(self, start_pos):
-        # list of cuts. 
-        # This is all we have initially to map with
-        self.cuts = []
-
-        # list of structural variations (for comparison to guess)
-        self.svs = []
-        # actual location on reference (for comparison to guess)
-        self.start_pos = start_pos
-
-    def add_cuts(self, cuts):
-        self.cuts += cuts
-
+        out = [""] * (i + 1) + out
+        return out + [""] * (len(self.distances) - len(out))
 
 if __name__ == '__main__':
     args = docopt(__doc__)

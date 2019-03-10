@@ -10,28 +10,17 @@ class Island:
         self.max_x = 0
         self.min_y = y
         self.max_y = 0
+        self.best = 0
 
     def set(self, x, y, val):
         self.grid[x][y] = val
-        self.max_x = max(x, self.max_x)
-        self.max_y = max(y, self.max_y)
         self.min_x = min(x, self.min_x)
         self.min_y = min(y, self.min_y)
 
-    def get_best(self):
-        best_i, best_j, val = -1,-1, 0
-        for i, row in enumerate(self.grid):
-            for j, cell in enumerate(row):
-                if cell <= val:
-                    best_i, best_j, val = i, j, cell
-
-        self.max_x = best_i
-        self.max_y = best_j
-        self.best = val
-        #print(f'Min: {self.min_x}, {self.min_y}')
-        #print(f'Max: {self.max_x}, {self.max_y}')
-        #print()
-        return best_i, best_j, val
+        if val <= self.best:
+            self.best = val
+            self.max_x = x
+            self.max_y = y
 
     def conflicts(self, o_i):
         if (self.min_x < o_i.min_x < self.max_x):
@@ -50,3 +39,34 @@ class Island:
                 return True
 
         return False
+
+    def explore(self, x, y, mem):
+        if mem.get(x, y):
+            self.set(x, y, mem.clear(x, y))
+            return True
+        return False
+
+def CreateIslands(mem):
+    islands = []
+    for i, row in enumerate(mem.table):
+        for j, cell in enumerate(row):
+            if cell != 0:
+                island = Island(mem.width, mem.height)
+                island.set(i, j, mem.clear(i, j))
+                queue = [(i, j)]
+                while queue:
+                    x, y = queue.pop()
+                    if island.explore(x-1, y, mem):
+                        queue.insert(0, (x-1, y))
+                    if island.explore(x+1, y, mem):
+                        queue.insert(0, (x+1, y))
+                    if island.explore(x, y-1, mem):
+                        queue.insert(0, (x, y-1))
+                    if island.explore(x, y+1, mem):
+                        queue.insert(0, (x, y+1))
+                    if island.explore(x+1, y+1, mem):
+                        queue.insert(0, (x+1, y+1))
+
+                if island.best < -1:
+                    islands.append(island)
+    return islands
