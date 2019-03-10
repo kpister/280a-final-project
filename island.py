@@ -27,6 +27,7 @@ class Island:
 
         self.max_x = best_i
         self.max_y = best_j
+        self.best = val
         #print(f'Min: {self.min_x}, {self.min_y}')
         #print(f'Max: {self.max_x}, {self.max_y}')
         #print()
